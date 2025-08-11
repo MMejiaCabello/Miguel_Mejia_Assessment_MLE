@@ -1,0 +1,649 @@
+# PIPELINE DEFINITION
+# Name: churn-prediction-pipeline
+# Description: Pipeline E2E: ingestión → FE → preproc → training + gate → registro
+# Inputs:
+#    auc_threshold: float [Default: 0.7]
+#    csv_path: str [Default: 'gs://assessment-mle/datasets/clientes.csv']
+#    model_display_name: str [Default: 'churn-xgb']
+#    project_id: str [Default: 'dev-farma-analytics-workspace']
+#    region: str [Default: 'us-central1']
+#    serving_image_uri: str [Default: 'us-docker.pkg.dev/vertex-ai/prediction/xgboost-cpu.1-7:latest']
+components:
+  comp-condition-2:
+    dag:
+      tasks:
+        register-model:
+          cachingOptions:
+            enableCache: true
+          componentRef:
+            name: comp-register-model
+          inputs:
+            artifacts:
+              trained_model:
+                componentInputArtifact: pipelinechannel--train-model-model_artifact
+            parameters:
+              display_name:
+                componentInputParameter: pipelinechannel--model_display_name
+              project_id:
+                componentInputParameter: pipelinechannel--project_id
+              region:
+                componentInputParameter: pipelinechannel--region
+              serving_image_uri:
+                componentInputParameter: pipelinechannel--serving_image_uri
+          taskInfo:
+            name: Register-Model
+    inputDefinitions:
+      artifacts:
+        pipelinechannel--train-model-model_artifact:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        pipelinechannel--auc_threshold:
+          parameterType: NUMBER_DOUBLE
+        pipelinechannel--model_display_name:
+          parameterType: STRING
+        pipelinechannel--project_id:
+          parameterType: STRING
+        pipelinechannel--region:
+          parameterType: STRING
+        pipelinechannel--serving_image_uri:
+          parameterType: STRING
+        pipelinechannel--train-model-roc_auc_out:
+          parameterType: NUMBER_DOUBLE
+  comp-condition-3:
+    dag:
+      tasks:
+        model-not-ok:
+          cachingOptions:
+            enableCache: true
+          componentRef:
+            name: comp-model-not-ok
+          inputs:
+            parameters:
+              msg:
+                runtimeValue:
+                  constant: AUC < {{$.inputs.parameters['pipelinechannel--auc_threshold']}}.
+                    No se registra el modelo.
+              pipelinechannel--auc_threshold:
+                componentInputParameter: pipelinechannel--auc_threshold
+          taskInfo:
+            name: model_not_ok
+    inputDefinitions:
+      parameters:
+        pipelinechannel--auc_threshold:
+          parameterType: NUMBER_DOUBLE
+        pipelinechannel--train-model-roc_auc_out:
+          parameterType: NUMBER_DOUBLE
+  comp-condition-branches-1:
+    dag:
+      tasks:
+        condition-2:
+          componentRef:
+            name: comp-condition-2
+          inputs:
+            artifacts:
+              pipelinechannel--train-model-model_artifact:
+                componentInputArtifact: pipelinechannel--train-model-model_artifact
+            parameters:
+              pipelinechannel--auc_threshold:
+                componentInputParameter: pipelinechannel--auc_threshold
+              pipelinechannel--model_display_name:
+                componentInputParameter: pipelinechannel--model_display_name
+              pipelinechannel--project_id:
+                componentInputParameter: pipelinechannel--project_id
+              pipelinechannel--region:
+                componentInputParameter: pipelinechannel--region
+              pipelinechannel--serving_image_uri:
+                componentInputParameter: pipelinechannel--serving_image_uri
+              pipelinechannel--train-model-roc_auc_out:
+                componentInputParameter: pipelinechannel--train-model-roc_auc_out
+          taskInfo:
+            name: model_ok
+          triggerPolicy:
+            condition: inputs.parameter_values['pipelinechannel--train-model-roc_auc_out']
+              >= inputs.parameter_values['pipelinechannel--auc_threshold']
+        condition-3:
+          componentRef:
+            name: comp-condition-3
+          inputs:
+            parameters:
+              pipelinechannel--auc_threshold:
+                componentInputParameter: pipelinechannel--auc_threshold
+              pipelinechannel--train-model-roc_auc_out:
+                componentInputParameter: pipelinechannel--train-model-roc_auc_out
+          taskInfo:
+            name: model_not_ok
+          triggerPolicy:
+            condition: '!(inputs.parameter_values[''pipelinechannel--train-model-roc_auc_out'']
+              >= inputs.parameter_values[''pipelinechannel--auc_threshold''])'
+    inputDefinitions:
+      artifacts:
+        pipelinechannel--train-model-model_artifact:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        pipelinechannel--auc_threshold:
+          parameterType: NUMBER_DOUBLE
+        pipelinechannel--model_display_name:
+          parameterType: STRING
+        pipelinechannel--project_id:
+          parameterType: STRING
+        pipelinechannel--region:
+          parameterType: STRING
+        pipelinechannel--serving_image_uri:
+          parameterType: STRING
+        pipelinechannel--train-model-roc_auc_out:
+          parameterType: NUMBER_DOUBLE
+  comp-feature-engineering:
+    executorLabel: exec-feature-engineering
+    inputDefinitions:
+      artifacts:
+        input_parquet:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        engineered_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-load-data:
+    executorLabel: exec-load-data
+    inputDefinitions:
+      parameters:
+        csv_path:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-model-not-ok:
+    executorLabel: exec-model-not-ok
+    inputDefinitions:
+      parameters:
+        msg:
+          parameterType: STRING
+  comp-preprocess-dataset:
+    executorLabel: exec-preprocess-dataset
+    inputDefinitions:
+      artifacts:
+        engineered_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        preprocessed_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-register-model:
+    executorLabel: exec-register-model
+    inputDefinitions:
+      artifacts:
+        trained_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        display_name:
+          defaultValue: churn-xgb
+          isOptional: true
+          parameterType: STRING
+        project_id:
+          parameterType: STRING
+        region:
+          parameterType: STRING
+        serving_image_uri:
+          defaultValue: us-docker.pkg.dev/vertex-ai/prediction/xgboost-cpu.1-7:latest
+          isOptional: true
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-train-model:
+    executorLabel: exec-train-model
+    inputDefinitions:
+      artifacts:
+        preprocessed_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        metrics_artifact:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+        model_artifact:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        roc_auc_out:
+          parameterType: NUMBER_DOUBLE
+deploymentSpec:
+  executors:
+    exec-feature-engineering:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - feature_engineering
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'numpy==1.26.4'\
+          \ 'pandas==2.1.4' 'pyarrow==14.0.2'  &&  python3 -m pip install --quiet\
+          \ --no-warn-script-location 'kfp==2.14.1' '--no-deps' 'typing-extensions>=3.7.4,<5;\
+          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef feature_engineering(\n    input_parquet: Input[Dataset],\n  \
+          \  engineered_dataset: Output[Dataset],\n):\n    \"\"\"\n    Lee un Parquet\
+          \ producido por el paso de ingesta, calcula 3 features y guarda otro Parquet.\n\
+          \    Features:\n      - days_since_last_purchase\n      - customer_tenure_days\n\
+          \      - value_x_purchases\n    \"\"\"\n    import pandas as pd\n    from\
+          \ datetime import datetime, timezone\n    from pathlib import Path\n\n \
+          \   in_path = f\"{input_parquet.path}.parquet\"\n    print(f\"[INFO] Leyendo\
+          \ parquet de entrada: {in_path}\")\n    df = pd.read_parquet(in_path)\n\n\
+          \    # Asegurar que las fechas est\xE9n en formato datetime (por si el parquet\
+          \ no preserv\xF3 tipo)\n    if df[\"signup_date\"].dtype.kind != \"M\":\n\
+          \        df[\"signup_date\"] = pd.to_datetime(df[\"signup_date\"], errors=\"\
+          coerce\")\n    if df[\"last_purchase_date\"].dtype.kind != \"M\":\n    \
+          \    df[\"last_purchase_date\"] = pd.to_datetime(df[\"last_purchase_date\"\
+          ], errors=\"coerce\")\n\n    # 'Hoy' en UTC (Vertex usa zona neutral; si\
+          \ prefieres Lima: usa tz='America/Lima' con dateutil/pytz)\n    today =\
+          \ pd.Timestamp(datetime.now(timezone.utc).date())\n\n    # 1) D\xEDas desde\
+          \ \xFAltima compra\n    df[\"days_since_last_purchase\"] = (today - df[\"\
+          last_purchase_date\"]).dt.days\n\n    # 2) Antig\xFCedad del cliente (en\
+          \ d\xEDas)\n    df[\"customer_tenure_days\"] = (today - df[\"signup_date\"\
+          ]).dt.days\n\n    # 3) Interacci\xF3n: valor promedio * total de compras\n\
+          \    # Manejo b\xE1sico de nulos\n    df[\"avg_purchase_value\"] = pd.to_numeric(df[\"\
+          avg_purchase_value\"], errors=\"coerce\")\n    df[\"total_purchases\"] =\
+          \ pd.to_numeric(df[\"total_purchases\"], errors=\"coerce\")\n    df[\"value_x_purchases\"\
+          ] = (df[\"avg_purchase_value\"].fillna(0) * df[\"total_purchases\"].fillna(0)).astype(float)\n\
+          \n    # Opcional: Si hay fechas faltantes, days_since_last_purchase/tenure\
+          \ quedan NaN. Puedes imputar si deseas:\n    # df[\"days_since_last_purchase\"\
+          ] = df[\"days_since_last_purchase\"].fillna(99999)\n    # df[\"customer_tenure_days\"\
+          ] = df[\"customer_tenure_days\"].fillna(0)\n\n    df.to_parquet(f\"{engineered_dataset.path}.parquet\"\
+          , index=False, engine=\"pyarrow\")\n\n    print(f\"[INFO] Filas procesadas:\
+          \ {len(df)}\")\n    print(f\"[INFO] Parquet con features guardado en: {engineered_dataset.path}\"\
+          )\n\n"
+        image: python:3.10
+    exec-load-data:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - load_data
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'numpy==1.26.4'\
+          \ 'pandas==2.1.4' 'pyarrow==14.0.2' 'gcsfs==2024.2.0'  &&  python3 -m pip\
+          \ install --quiet --no-warn-script-location 'kfp==2.14.1' '--no-deps' 'typing-extensions>=3.7.4,<5;\
+          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef load_data(\n    csv_path: str,\n    dataset: Output[Dataset],\n\
+          ):\n    \"\"\"\n    Componente de Vertex AI Pipeline que carga un archivo\
+          \ CSV y lo guarda en formato Parquet.\n    \"\"\"\n    import numpy as np\n\
+          \    import pandas as pd\n    import pyarrow as pa\n    import pyarrow.parquet\
+          \ as pq\n\n    df = pd.read_csv(csv_path, parse_dates=[\"signup_date\",\
+          \ \"last_purchase_date\"])\n    print(f\"[INFO] Leyendo CSV desde: {csv_path}\"\
+          )\n\n    df.to_parquet(f\"{dataset.path}.parquet\", engine='pyarrow', index=False)\
+          \   \n    print(f\"[INFO] Filas cargadas: {len(df)}\")\n    print(f\"[INFO]\
+          \ Archivo Parquet guardado en: {dataset.path}.parquet\")\n\n"
+        image: python:3.10
+    exec-model-not-ok:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - model_not_ok
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef model_not_ok(msg: str):\n    # Componente m\xEDnimo para dejar\
+          \ constancia cuando el modelo no pasa el umbral\n    print(f\"[MODEL NOT\
+          \ OK] {msg}\")\n\n"
+        image: python:3.10
+    exec-preprocess-dataset:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - preprocess_dataset
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'numpy==1.26.4'\
+          \ 'pandas==2.1.4' 'pyarrow==14.0.2'  &&  python3 -m pip install --quiet\
+          \ --no-warn-script-location 'kfp==2.14.1' '--no-deps' 'typing-extensions>=3.7.4,<5;\
+          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef preprocess_dataset(\n    engineered_dataset: Input[Dataset],\n\
+          \    preprocessed_dataset: Output[Dataset],\n):\n    \"\"\"\n    Limpia,\
+          \ valida y normaliza tipos. Deja el dataset listo para training.\n    Valida:\n\
+          \      - Columnas requeridas\n      - Rangos b\xE1sicos (no negativos)\n\
+          \    Transforma:\n      - gender -> {Male:1, Female:0, otros:NaN}\n    \
+          \  - casteo de tipos num\xE9ricos\n      - imputa NaN num\xE9ricos con mediana\
+          \ (simple)\n    \"\"\"\n    import pandas as pd\n    import numpy as np\n\
+          \    from pathlib import Path\n\n    in_path = f\"{engineered_dataset.path}.parquet\"\
+          \n    df = pd.read_parquet(in_path)\n\n    required_cols = [\n        \"\
+          customer_id\",\"age\",\"gender\",\"signup_date\",\"last_purchase_date\"\
+          ,\n        \"total_purchases\",\"avg_purchase_value\",\"is_active\",\"churned\"\
+          ,\n        \"days_since_last_purchase\",\"customer_tenure_days\",\"value_x_purchases\"\
+          \n    ]\n    missing = [c for c in required_cols if c not in df.columns]\n\
+          \    if missing:\n        raise ValueError(f\"Faltan columnas requeridas:\
+          \ {missing}\")\n\n    # Tipos\n    num_cols = [\"age\",\"total_purchases\"\
+          ,\"avg_purchase_value\",\n                \"is_active\",\"days_since_last_purchase\"\
+          ,\"customer_tenure_days\",\n                \"value_x_purchases\"]\n   \
+          \ for c in num_cols:\n        df[c] = pd.to_numeric(df[c], errors=\"coerce\"\
+          )\n\n    # gender a binario\n    df[\"gender\"] = df[\"gender\"].map({\"\
+          Male\":1, \"Female\":0})\n    # is_active a 0/1\n    df[\"is_active\"] =\
+          \ df[\"is_active\"].fillna(0).astype(int)\n\n    # Validaciones b\xE1sicas\
+          \ (no negativos en columnas clave)\n    for c in [\"age\",\"total_purchases\"\
+          ,\"avg_purchase_value\",\n              \"days_since_last_purchase\",\"\
+          customer_tenure_days\"]:\n        if (df[c] < 0).any():\n            raise\
+          \ ValueError(f\"Valores negativos en {c}\")\n\n    # Imputaci\xF3n simple\
+          \ (mediana) para num\xE9ricos\n    for c in num_cols:\n        df[c] = df[c].fillna(df[c].median())\n\
+          \n    # Imputa gender faltante con moda (0/1)\n    df[\"gender\"] = df[\"\
+          gender\"].fillna(df[\"gender\"].mode().iloc[0] if not df[\"gender\"].dropna().empty\
+          \ else 0).astype(int)\n\n    # Guardar\n    # out_dir = Path(preprocessed_dataset.path)\n\
+          \    # out_dir.mkdir(parents=True, exist_ok=True)\n    # out_path = out_dir\
+          \ / \"clientes_preprocessed.parquet\"\n    # df.to_parquet(out_path, index=False,\
+          \ engine=\"pyarrow\")\n\n    df.to_parquet(f\"{preprocessed_dataset.path}.parquet\"\
+          , index=False, engine=\"pyarrow\")\n\n    print(f\"[INFO] Preprocesamiento\
+          \ OK. Filas: {len(df)}\")\n    print(f\"[INFO] Guardado en: {preprocessed_dataset.path}\"\
+          )\n\n"
+        image: python:3.10
+    exec-register-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - register_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-aiplatform==1.59.0'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef register_model(\n    trained_model: Input[Model],\n    project_id:\
+          \ str,\n    region: str,\n    display_name: str = \"churn-xgb\",\n    serving_image_uri:\
+          \ str = \"us-docker.pkg.dev/vertex-ai/prediction/xgboost-cpu.1-7:latest\"\
+          ,\n) -> str:\n    \"\"\"\n    Sube el modelo al Model Registry usando el\
+          \ directorio del artefacto como artifact_uri.\n    Retorna el resource name\
+          \ del Model.\n    \"\"\"\n    from google.cloud import aiplatform\n\n  \
+          \  aiplatform.init(\n        project=project_id,\n        location=region\n\
+          \    )\n\n    artifact_uri = trained_model.path  # carpeta con model.json\n\
+          \n    print(f\"[INFO] Registrando modelo desde: {artifact_uri}\")\n    model\
+          \ = aiplatform.Model.upload(\n        display_name=display_name,\n     \
+          \   artifact_uri=artifact_uri,\n        serving_container_image_uri=serving_image_uri,\n\
+          \        labels={\"usecase\":\"churn\",\"stage\":\"dev\"},\n        description=\"\
+          XGBoost churn entrenado v\xEDa Vertex Pipelines\"\n    )\n    model.wait()\n\
+          \    print(f\"[INFO] Registrado: {model.resource_name}\")\n    return model.resource_name\n\
+          \n"
+        image: python:3.10
+    exec-train-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'numpy==1.26.4'\
+          \ 'pandas==2.1.4' 'pyarrow==14.0.2' 'xgboost==1.7.6' 'scikit-learn==1.3.2'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train_model(\n    preprocessed_dataset: Input[Dataset],\n   \
+          \ model_artifact: Output[Model],\n    metrics_artifact: Output[Metrics],\n\
+          \    roc_auc_out: OutputPath(float),  # \u2190 salida primitiva para condicionar\
+          \ el pipeline\n):\n    \"\"\"\n    Entrena XGBoost para churn y emite m\xE9\
+          tricas + modelo.\n    \"\"\"\n    import numpy as np\n    import pandas\
+          \ as pd\n    import xgboost as xgb\n    from pathlib import Path\n    from\
+          \ sklearn.model_selection import train_test_split\n    from sklearn.metrics\
+          \ import accuracy_score, f1_score, roc_auc_score\n\n    df = pd.read_parquet(f\"\
+          {preprocessed_dataset.path}.parquet\")\n\n    # Definir features y target\n\
+          \    drop_non_features = [\n        \"customer_id\",\"signup_date\",\"last_purchase_date\"\
+          ,\"churned\"\n    ]\n    feature_cols = [c for c in df.columns if c not\
+          \ in drop_non_features]\n    X = df[feature_cols]\n    y = df[\"churned\"\
+          ].astype(int)\n\n    X_train, X_test, y_train, y_test = train_test_split(\n\
+          \        X, y, test_size=0.2, random_state=42, stratify=y\n    )\n\n   \
+          \ model = xgb.XGBClassifier(\n        objective=\"binary:logistic\",\n \
+          \       eval_metric=\"logloss\",\n        n_estimators=200,\n        learning_rate=0.1,\n\
+          \        max_depth=5,\n        subsample=0.9,\n        colsample_bytree=0.9,\n\
+          \        random_state=42,\n        tree_method=\"hist\"\n    )\n    model.fit(X_train,\
+          \ y_train)\n\n    y_pred = model.predict(X_test)\n    y_proba = model.predict_proba(X_test)[:,\
+          \ 1]\n\n    acc = float(accuracy_score(y_test, y_pred))\n    f1 = float(f1_score(y_test,\
+          \ y_pred))\n    # auc = float(roc_auc_score(y_test, y_proba))    \n    if\
+          \ len(np.unique(y_test)) < 2:\n        auc = 0.5  # baseline cuando no hay\
+          \ clases positivas/negativas en el split\n    else:\n        auc = float(roc_auc_score(y_test,\
+          \ y_proba))\n\n    print(f\"[METRICS] accuracy={acc:.4f} f1={f1:.4f} roc_auc={auc:.4f}\"\
+          )\n\n    # Log en Metrics\n    metrics_artifact.log_metric(\"accuracy\"\
+          , acc)\n    metrics_artifact.log_metric(\"f1_score\", f1)\n    metrics_artifact.log_metric(\"\
+          roc_auc\", auc)\n\n    # Salida primitiva para gating\n    with open(roc_auc_out,\
+          \ \"w\") as f:\n        f.write(str(auc))\n\n#     # Guardar modelo\n# \
+          \    out_dir = Path(model_artifact.path)\n#     out_dir.mkdir(parents=True,\
+          \ exist_ok=True)\n#     model.save_model(out_dir / \"model.json\")\n\n#\
+          \     print(f\"[INFO] Modelo guardado en {out_dir / 'model.json'}\")\n \
+          \   # Guardar modelo en formato compatible con Model Registry (ej: model.bst)\n\
+          \    out_dir = Path(model_artifact.path)\n    out_dir.mkdir(parents=True,\
+          \ exist_ok=True)\n    model.save_model(out_dir / \"model.bst\")\n\n    print(f\"\
+          [INFO] Modelo guardado en {out_dir / 'model.bst'}\")\n    print(f\"[DEBUG]\
+          \ Contenido del directorio de modelo: {list(out_dir.iterdir())}\")    \n\
+          \n"
+        image: python:3.10
+pipelineInfo:
+  description: "Pipeline E2E: ingesti\xF3n \u2192 FE \u2192 preproc \u2192 training\
+    \ + gate \u2192 registro"
+  name: churn-prediction-pipeline
+root:
+  dag:
+    tasks:
+      condition-branches-1:
+        componentRef:
+          name: comp-condition-branches-1
+        dependentTasks:
+        - train-model
+        inputs:
+          artifacts:
+            pipelinechannel--train-model-model_artifact:
+              taskOutputArtifact:
+                outputArtifactKey: model_artifact
+                producerTask: train-model
+          parameters:
+            pipelinechannel--auc_threshold:
+              componentInputParameter: auc_threshold
+            pipelinechannel--model_display_name:
+              componentInputParameter: model_display_name
+            pipelinechannel--project_id:
+              componentInputParameter: project_id
+            pipelinechannel--region:
+              componentInputParameter: region
+            pipelinechannel--serving_image_uri:
+              componentInputParameter: serving_image_uri
+            pipelinechannel--train-model-roc_auc_out:
+              taskOutputParameter:
+                outputParameterKey: roc_auc_out
+                producerTask: train-model
+        taskInfo:
+          name: condition-branches-1
+      feature-engineering:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-feature-engineering
+        dependentTasks:
+        - load-data
+        inputs:
+          artifacts:
+            input_parquet:
+              taskOutputArtifact:
+                outputArtifactKey: dataset
+                producerTask: load-data
+        taskInfo:
+          name: Feature-Engineering
+      load-data:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-load-data
+        inputs:
+          parameters:
+            csv_path:
+              componentInputParameter: csv_path
+        taskInfo:
+          name: Ingestion
+      preprocess-dataset:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-preprocess-dataset
+        dependentTasks:
+        - feature-engineering
+        inputs:
+          artifacts:
+            engineered_dataset:
+              taskOutputArtifact:
+                outputArtifactKey: engineered_dataset
+                producerTask: feature-engineering
+        taskInfo:
+          name: Preprocessing
+      train-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-model
+        dependentTasks:
+        - preprocess-dataset
+        inputs:
+          artifacts:
+            preprocessed_dataset:
+              taskOutputArtifact:
+                outputArtifactKey: preprocessed_dataset
+                producerTask: preprocess-dataset
+        taskInfo:
+          name: Training
+  inputDefinitions:
+    parameters:
+      auc_threshold:
+        defaultValue: 0.7
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      csv_path:
+        defaultValue: gs://assessment-mle/datasets/clientes.csv
+        isOptional: true
+        parameterType: STRING
+      model_display_name:
+        defaultValue: churn-xgb
+        isOptional: true
+        parameterType: STRING
+      project_id:
+        defaultValue: dev-farma-analytics-workspace
+        isOptional: true
+        parameterType: STRING
+      region:
+        defaultValue: us-central1
+        isOptional: true
+        parameterType: STRING
+      serving_image_uri:
+        defaultValue: us-docker.pkg.dev/vertex-ai/prediction/xgboost-cpu.1-7:latest
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.14.1
