@@ -3,3 +3,4 @@
 */README-checkpoint.md
 .gitignore.save
 ..gitignore.swp
+*cpython-310.pyc
